@@ -43,7 +43,7 @@ COX_VARS = [
 # =============================================================================
 # CONFIGURATION FIREBASE
 # =============================================================================
-FIREBASE_API_KEY = st.secrets.get("FIREBASE_API_KEY") or os.environ.get("FIREBASE_API_KEY")
+FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
 
 FIREBASE_CONFIG = {
     "apiKey": FIREBASE_API_KEY,
