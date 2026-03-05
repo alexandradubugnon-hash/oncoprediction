@@ -43,7 +43,7 @@ COX_VARS = [
 # =============================================================================
 # CONFIGURATION FIREBASE
 # =============================================================================
-FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
+FIREBASE_API_KEY = st.secrets.get("FIREBASE_API_KEY") or os.environ.get("FIREBASE_API_KEY")
 
 FIREBASE_CONFIG = {
     "apiKey": FIREBASE_API_KEY,
@@ -135,6 +135,32 @@ def firebase_reset_password(email):
         return True, None
     except requests.exceptions.RequestException:
         return False, "Erreur de connexion au serveur. Réessayez."
+
+
+def firebase_send_verification_email(id_token):
+    """Envoie un email de vérification d'adresse à l'utilisateur connecté."""
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={FIREBASE_API_KEY}"
+    payload = {"requestType": "VERIFY_EMAIL", "idToken": id_token}
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        data = response.json()
+        return "error" not in data
+    except requests.exceptions.RequestException:
+        return False
+
+
+def firebase_get_account_info(id_token):
+    """Récupère les informations du compte (dont emailVerified)."""
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={FIREBASE_API_KEY}"
+    payload = {"idToken": id_token}
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        data = response.json()
+        if "error" in data or "users" not in data:
+            return None
+        return data
+    except requests.exceptions.RequestException:
+        return None
 
 
 # =============================================================================
@@ -1535,12 +1561,33 @@ def show_auth_page():
                         user, error = firebase_sign_in(email, password)
                     if error:
                         st.error(error)
+                        st.session_state.pop("_unverified_token", None)
                     else:
-                        st.session_state["authenticated"] = True
-                        st.session_state["user_email"] = user["email"]
-                        st.session_state["user_token"] = user["idToken"]
-                        st.session_state["user_id"]    = user.get("localId", user["email"])
-                        st.rerun()
+                        account_info = firebase_get_account_info(user["idToken"])
+                        email_verified = (
+                            account_info is not None
+                            and account_info.get("users", [{}])[0].get("emailVerified", False)
+                        )
+                        if not email_verified:
+                            st.session_state["_unverified_token"] = user["idToken"]
+                            st.rerun()
+                        else:
+                            st.session_state.pop("_unverified_token", None)
+                            st.session_state["authenticated"] = True
+                            st.session_state["user_email"] = user["email"]
+                            st.session_state["user_token"] = user["idToken"]
+                            st.session_state["user_id"]    = user.get("localId", user["email"])
+                            st.rerun()
+
+            # Avertissement email non vérifié (persiste entre reruns via session_state)
+            if st.session_state.get("_unverified_token"):
+                st.warning(
+                    "⚠️ Veuillez d'abord vérifier votre email. "
+                    "Vérifiez votre boîte de réception (et les spams)."
+                )
+                if st.button("Renvoyer l'email de vérification", use_container_width=True):
+                    firebase_send_verification_email(st.session_state["_unverified_token"])
+                    st.success("Email de vérification renvoyé !")
 
             st.markdown("")
             col_a, col_b = st.columns(2)
@@ -1580,9 +1627,14 @@ def show_auth_page():
                     if error:
                         st.error(error)
                     else:
-                        st.success("Compte créé avec succès. Vous pouvez maintenant vous connecter.")
-                        st.session_state.auth_mode = "login"
-                        st.rerun()
+                        # Connecter temporairement pour envoyer l'email de vérification
+                        temp_user, _ = firebase_sign_in(email, password)
+                        if temp_user:
+                            firebase_send_verification_email(temp_user["idToken"])
+                        st.success(
+                            "✅ Compte créé ! Un email de vérification a été envoyé à votre "
+                            "adresse. Cliquez sur le lien dans l'email puis connectez-vous."
+                        )
 
             st.markdown("")
             if st.button("← Retour à la connexion", use_container_width=True):
